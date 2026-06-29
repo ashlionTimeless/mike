@@ -168,6 +168,7 @@ export async function streamGemini(
     runTools,
     apiKeys,
     enableThinking,
+    onLlmIterationEnd,
   } = params;
   const maxIter = params.maxIterations ?? 10;
   const ai = client(apiKeys?.gemini);
@@ -211,6 +212,11 @@ export async function streamGemini(
       const callParts: GeminiPart[] = [];
       const toolCalls: NormalizedToolCall[] = [];
       let sawThinking = false;
+      let iterationUsage: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        totalTokenCount?: number;
+      } | null = null;
       const iterator = stream[Symbol.asyncIterator]();
       let rejectAbort: ((reason?: unknown) => void) | null = null;
       const abortPromise = new Promise<never>((_, reject) => {
@@ -243,6 +249,19 @@ export async function streamGemini(
           });
           const failureMessage = geminiStreamFailureMessage(chunk);
           if (failureMessage) throw new Error(failureMessage);
+
+          const usageMetadata = (
+            chunk as {
+              usageMetadata?: {
+                promptTokenCount?: number;
+                candidatesTokenCount?: number;
+                totalTokenCount?: number;
+              };
+            }
+          ).usageMetadata;
+          if (usageMetadata) {
+            iterationUsage = usageMetadata;
+          }
 
           const parts =
             (chunk as { candidates?: { content?: { parts?: GeminiPart[] } }[] })
@@ -287,7 +306,22 @@ export async function streamGemini(
       if (sawThinking) callbacks.onReasoningBlockEnd?.();
       throwIfAborted(params.abortSignal);
 
-      fullText += textParts.join("");
+      const iterText = textParts.join("");
+      fullText += iterText;
+
+      onLlmIterationEnd?.({
+        iteration: iter,
+        inputTokens: iterationUsage?.promptTokenCount ?? null,
+        outputTokens: iterationUsage?.candidatesTokenCount ?? null,
+        inputs: {
+          systemPrompt,
+          messages: contents,
+        },
+        artifacts: {
+          text: iterText,
+          toolCalls: [...toolCalls],
+        },
+      });
 
       if (!toolCalls.length || !runTools) {
         break;
@@ -299,7 +333,7 @@ export async function streamGemini(
       // Append the model's turn (text + functionCall parts, in that order)
       // and the matching functionResponse turn.
       const modelParts: GeminiPart[] = [];
-      if (textParts.length) modelParts.push({ text: textParts.join("") });
+      if (textParts.length) modelParts.push({ text: iterText });
       for (const cp of callParts) modelParts.push(cp);
       contents.push({ role: "model", parts: modelParts });
 

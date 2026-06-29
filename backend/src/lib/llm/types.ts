@@ -44,6 +44,29 @@ export type UserApiKeys = {
     courtlistener?: string | null;
 };
 
+export type TokenUsage = {
+    inputTokens: number | null;
+    outputTokens: number | null;
+};
+
+export type LlmIterationLog = {
+    iteration: number;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    inputs: {
+        systemPrompt: string;
+        messages: unknown;
+    };
+    artifacts: {
+        text: string;
+        toolCalls: NormalizedToolCall[];
+    };
+};
+
+export type StreamChatResult = {
+    fullText: string;
+};
+
 export type StreamChatParams = {
     model: string;
     systemPrompt: string;
@@ -61,8 +84,6 @@ export type StreamChatParams = {
      */
     enableThinking?: boolean;
     abortSignal?: AbortSignal;
-};
-
-export type StreamChatResult = {
-    fullText: string;
+    /** Fires at the end of each model iteration with token usage when available. */
+    onLlmIterationEnd?: (info: LlmIterationLog) => void;
 };

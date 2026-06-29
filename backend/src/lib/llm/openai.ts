@@ -48,6 +48,11 @@ type ResponseStreamEvent = {
     output_text?: string;
     status?: string;
     error?: { code?: string; message?: string } | null;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      total_tokens?: number;
+    };
   };
   error?: { code?: string; message?: string } | null;
   item?: ResponseFunctionCallItem;
@@ -215,6 +220,7 @@ export async function streamOpenAI(
     runTools,
     apiKeys,
     enableThinking,
+    onLlmIterationEnd,
   } = params;
   const maxIter = params.maxIterations ?? 10;
   const key = apiKey(apiKeys?.openai);
@@ -253,6 +259,11 @@ export async function streamOpenAI(
       const startedToolCallIds = new Set<string>();
       let buffer = "";
       let sawReasoning = false;
+      let iterText = "";
+      let iterationUsage: {
+        input_tokens?: number;
+        output_tokens?: number;
+      } | null = null;
 
       while (true) {
         throwIfAborted(params.abortSignal);
@@ -299,6 +310,10 @@ export async function streamOpenAI(
             previousResponseId = event.response.id;
           }
 
+          if (event.response?.usage) {
+            iterationUsage = event.response.usage;
+          }
+
           if (
             event.type === "response.reasoning_summary_text.delta" &&
             typeof event.delta === "string"
@@ -312,6 +327,7 @@ export async function streamOpenAI(
             typeof event.delta === "string"
           ) {
             fullText += event.delta;
+            iterText += event.delta;
             callbacks.onContentDelta?.(event.delta);
           }
 
@@ -339,6 +355,23 @@ export async function streamOpenAI(
 
       if (sawReasoning) callbacks.onReasoningBlockEnd?.();
       throwIfAborted(params.abortSignal);
+
+      onLlmIterationEnd?.({
+        iteration: iter,
+        inputTokens: iterationUsage?.input_tokens ?? null,
+        outputTokens: iterationUsage?.output_tokens ?? null,
+        inputs: {
+          systemPrompt: responseInstructions(
+            systemPrompt,
+            needsCourtlistenerCitationReminder,
+          ),
+          messages: input,
+        },
+        artifacts: {
+          text: iterText,
+          toolCalls: [...toolCalls],
+        },
+      });
 
       if (!toolCalls.length || !runTools) {
         break;
