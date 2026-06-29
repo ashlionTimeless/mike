@@ -5,7 +5,10 @@ WORKDIR /app
 
 # LibreOffice is required for DOCX/DOC to PDF conversion.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice \
+    && apt-get install -y --no-install-recommends \
+        libreoffice \
+        default-jre-headless \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps
@@ -24,8 +27,9 @@ ENV HOME=/home/mike
 ENV XDG_CACHE_HOME=/home/mike/.cache
 ENV XDG_CONFIG_HOME=/home/mike/.config
 ENV FONTCONFIG_CACHEDIR=/home/mike/.cache/fontconfig
-# Headless LibreOffice in containers (no X11).
-ENV SAL_USE_VCLPLUGIN=gen
+# Headless LibreOffice in containers (svp = no X11 display required).
+ENV SAL_USE_VCLPLUGIN=svp
+ENV SAL_DISABLE_OPENCL=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gosu \

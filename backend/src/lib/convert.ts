@@ -51,6 +51,14 @@ function resolveSofficeBinaryPaths(): string[] {
   return _sofficeBinaryPaths;
 }
 
+function sofficeExecEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    SAL_USE_VCLPLUGIN: process.env.SAL_USE_VCLPLUGIN ?? "svp",
+    SAL_DISABLE_OPENCL: process.env.SAL_DISABLE_OPENCL ?? "1",
+  };
+}
+
 async function getConvert() {
   if (!_convert) {
     const libre = await import("libreoffice-convert");
@@ -60,7 +68,11 @@ async function getConvert() {
       buf: Buffer,
       ext: string,
       filter: undefined,
-      options: { sofficeBinaryPaths?: string[] },
+      options: {
+        sofficeBinaryPaths?: string[];
+        execOptions?: { env?: NodeJS.ProcessEnv };
+        sofficeAdditionalArgs?: string[];
+      },
       callback?: (err: Error | null, result: Buffer) => void,
     ) => Promise<Buffer> | void;
     _convert = (buf, ext, filter) =>
@@ -70,7 +82,11 @@ async function getConvert() {
             buf,
             ext,
             filter,
-            { sofficeBinaryPaths: resolveSofficeBinaryPaths() },
+            {
+              sofficeBinaryPaths: resolveSofficeBinaryPaths(),
+              execOptions: { env: sofficeExecEnv() },
+              sofficeAdditionalArgs: ["--invisible", "--norestore"],
+            },
             (err, result) => {
               if (err) reject(err);
               else resolve(result);
