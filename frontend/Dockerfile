@@ -1,18 +1,24 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.4
 
 FROM node:22-bookworm-slim AS base
 WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
 
-FROM base AS deps
+FROM base AS build
 COPY package.json package-lock.json ./
-RUN npm ci
+# Keep node_modules in a BuildKit cache mount so this layer does not commit
+# a huge snapshot (avoids intermittent BuildKit "snapshot does not exist" errors).
+RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,target=/app/node_modules,sharing=locked,id=mike-frontend-nm \
+    npm ci
 
-FROM deps AS build
 COPY . .
 
 # NEXT_PUBLIC_* variables are read during `next build`. Use .env when present,
 # otherwise fall back to committed env.docker (used by scaffoldbench compose).
-RUN if [ -f .env ]; then cp .env .env.build; elif [ -f env.docker ]; then cp env.docker .env.build; else echo "frontend/.env or env.docker is required." >&2 && exit 1; fi \
+RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,target=/app/node_modules,sharing=locked,id=mike-frontend-nm \
+    if [ -f .env ]; then cp .env .env.build; elif [ -f env.docker ]; then cp env.docker .env.build; else echo "frontend/.env or env.docker is required." >&2 && exit 1; fi \
     && mv .env.build .env \
     && npm run build
 
@@ -26,12 +32,10 @@ RUN addgroup --system --gid 1001 nodejs \
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-
-COPY --from=build /app/public ./public
-COPY --from=build /app/next.config.ts ./next.config.ts
-COPY --from=build --chown=nextjs:nodejs /app/.next ./.next
+# Standalone output bundles production deps; no second `npm ci` in the image.
+COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=build --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
 EXPOSE 3000
@@ -39,4 +43,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:3000').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["npm", "run", "start", "--", "-p", "3000", "-H", "0.0.0.0"]
+CMD ["node", "server.js"]
