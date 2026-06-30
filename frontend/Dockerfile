@@ -10,8 +10,10 @@ RUN npm ci
 FROM deps AS build
 COPY . .
 
-# NEXT_PUBLIC_* variables are read from frontend/.env during `next build`.
-RUN test -f .env || (echo "frontend/.env is required. Copy from .env.local.example." >&2 && exit 1) \
+# NEXT_PUBLIC_* variables are read during `next build`. Use .env when present,
+# otherwise fall back to committed env.docker (used by scaffoldbench compose).
+RUN if [ -f .env ]; then cp .env .env.build; elif [ -f env.docker ]; then cp env.docker .env.build; else echo "frontend/.env or env.docker is required." >&2 && exit 1; fi \
+    && mv .env.build .env \
     && npm run build
 
 FROM base AS runner
