@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Run Log Reader</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-muted: #f0f2f5;
+      --border: #d8dde5;
+      --text: #1a1f2b;
+      --text-muted: #5c6578;
+      --text-faint: #8b93a3;
+      --accent: #2563eb;
+      --success: #15803d;
+      --success-bg: #ecfdf3;
+      --fail: #b91c1c;
+      --fail-bg: #fef2f2;
+      --warn: #92400e;
+      --warn-bg: #fffbeb;
+      --shadow: 0 1px 3px rgba(16, 24, 40, 0.08);
+      --radius: 10px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+      --max-width: 1024px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1218;
+        --surface: #181c24;
+        --surface-muted: #222833;
+        --border: #2f3744;
+        --text: #e8ecf3;
+        --text-muted: #a8b0bf;
+        --text-faint: #7a8496;
+        --accent: #60a5fa;
+        --success: #4ade80;
+        --success-bg: #14261a;
+        --fail: #f87171;
+        --fail-bg: #2a1515;
+        --warn: #fbbf24;
+        --warn-bg: #2a2210;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.55;
+      color: var(--text);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 1.5rem 1.25rem 3rem;
+    }
+
+    .page-header {
+      margin-bottom: 1.75rem;
+    }
+
+    .page-header h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.5rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+
+    .page-header .subtitle {
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    .state-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem 1.5rem;
+      text-align: center;
+      box-shadow: var(--shadow);
+    }
+
+    .state-panel h2 {
+      margin: 0 0 0.5rem;
+      font-size: 1.15rem;
+    }
+
+    .state-panel p {
+      margin: 0.35rem 0;
+      color: var(--text-muted);
+    }
+
+    .state-panel code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+      background: var(--surface-muted);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+
+    .state-panel.error h2 { color: var(--fail); }
+    .state-panel.warn {
+      background: var(--warn-bg);
+      border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
+      text-align: left;
+      padding: 0.85rem 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      color: var(--warn);
+    }
+
+    .spinner-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 3rem 1rem;
+      color: var(--text-muted);
+    }
+
+    .spinner {
+      width: 2rem;
+      height: 2rem;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .steps { display: flex; flex-direction: column; gap: 0.65rem; }
+
+    /* Outer step disclosure */
+    .step-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .step-card.is-failed {
+      border-color: color-mix(in srgb, var(--fail) 40%, var(--border));
+    }
+
+    .step-card > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 1rem;
+      user-select: none;
+    }
+
+    .step-card > summary::-webkit-details-marker { display: none; }
+
+    .step-card > summary::before {
+      content: "";
+      display: inline-block;
+      width: 0.55rem;
+      height: 0.55rem;
+      border-right: 2px solid var(--text-muted);
+      border-bottom: 2px solid var(--text-muted);
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
+      flex-shrink: 0;
+      margin-right: 0.15rem;
+    }
+
+    .step-card[open] > summary::before {
+      transform: rotate(45deg);
+    }
+
+    .step-card > summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .step-num {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      color: var(--text-faint);
+      min-width: 2rem;
+      font-size: 0.85rem;
+    }
+
+    .step-name {
+      font-weight: 650;
+      font-size: 0.95rem;
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    .step-action {
+      flex: 1 1 12rem;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      min-width: 0;
+      word-break: break-word;
+    }
+
+    .step-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+      margin-left: auto;
+    }
+
+    .token-pill {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      background: var(--surface-muted);
+      padding: 0.2em 0.55em;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.2em 0.55em;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .status-badge.success {
+      color: var(--success);
+      background: var(--success-bg);
+    }
+
+    .status-badge.fail {
+      color: var(--fail);
+      background: var(--fail-bg);
+    }
+
+    .step-body {
+      padding: 0 1rem 1rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+      gap: 0.5rem 1rem;
+      padding: 0.85rem 0 0.65rem;
+      font-size: 0.85rem;
+    }
+
+    .meta-item dt {
+      margin: 0;
+      color: var(--text-faint);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .meta-item dd {
+      margin: 0.1rem 0 0;
+      color: var(--text-muted);
+      word-break: break-word;
+    }
+
+    .meta-item dd.mono { font-family: var(--mono); font-size: 0.82rem; }
+
+    .source-badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.15em 0.45em;
+      border-radius: 4px;
+      background: var(--surface-muted);
+      color: var(--text-faint);
+    }
+
+    /* Nested artifact disclosures */
+    .artifact-sections {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .artifact-block {
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      background: var(--surface-muted);
+      overflow: hidden;
+    }
+
+    .artifact-block > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 0.55rem 0.75rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      user-select: none;
+    }
+
+    .artifact-block > summary::-webkit-details-marker { display: none; }
+
+    .artifact-block > summary::before {
+      content: "+";
+      font-family: var(--mono);
+      font-size: 0.9rem;
+      width: 1rem;
+      text-align: center;
+      color: var(--text-faint);
+      flex-shrink: 0;
+    }
+
+    .artifact-block[open] > summary::before { content: "−"; }
+
+    .artifact-block > summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .artifact-block.is-empty .artifact-empty-label {
+      padding: 0.55rem 0.75rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+      font-style: italic;
+      color: var(--text-faint);
+    }
+
+    .artifact-content {
+      margin: 0;
+      padding: 0.65rem 0.75rem;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 28rem;
+      overflow: auto;
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .summary-panel {
+      margin-top: 2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1.25rem 1.25rem 1rem;
+    }
+
+    .summary-panel h2 {
+      margin: 0 0 1rem;
+      font-size: 1.1rem;
+      font-weight: 650;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+      gap: 0.75rem 1rem;
+    }
+
+    .summary-stat {
+      background: var(--surface-muted);
+      border-radius: 8px;
+      padding: 0.75rem 0.85rem;
+    }
+
+    .summary-stat .label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.25rem;
+    }
+
+    .summary-stat .value {
+      font-size: 1.35rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+
+    .summary-stat .value.fail { color: var(--fail); }
+
+    @media (max-width: 540px) {
+      .step-card > summary { gap: 0.4rem 0.6rem; }
+      .step-meta { margin-left: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="page-header">
+      <h1 id="page-title">Agent Run Log Reader</h1>
+      <p class="subtitle" id="page-subtitle">Reader mode for JSONL agent step logs</p>
+    </header>
+    <div id="app" role="main">
+      <div class="spinner-wrap" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <span>Loading log…</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Base directory for log files, relative to this page.
+    // Local: ./  (sample-run.jsonl sits next to reader.html)
+    // Docker: ./logs/  (set in log-reader/Dockerfile; agent logs mounted at /logs/)
+    const LOG_BASE = "./";
+
+    // -------------------------------------------------------------------------
+    // ⚠️ Configurable assumption: Tool Calls Number
+    // Count entries that have a non-empty `tool` field.
+    // The log may emit several entries per logical invocation (e.g. doc_find_start,
+    // doc_find, find_in_document), so this reflects tool-related log lines, not
+    // necessarily distinct invocations. Swap this function to change the definition
+    // (e.g. count distinct tool values, or entries where step === tool).
+    // -------------------------------------------------------------------------
+    function countToolCalls(entries) {
+      return entries.filter((e) => {
+        const tool = e.tool;
+        return typeof tool === "string" && tool.trim().length > 0;
+      }).length;
+    }
+
+    // -------------------------------------------------------------------------
+    // ⚠️ Configurable assumption: Artifact key lookup
+    // Real data uses lowercase `input` / `output`; match case-insensitively.
+    // -------------------------------------------------------------------------
+    function getArtifactValue(artifacts, keyName) {
+      if (!artifacts || typeof artifacts !== "object" || Array.isArray(artifacts)) {
+        return undefined;
+      }
+      const target = keyName.toLowerCase();
+      for (const [k, v] of Object.entries(artifacts)) {
+        if (k.toLowerCase() === target) return v;
+      }
+      return undefined;
+    }
+
+    function sanitizeLogParam(filename) {
+      if (!filename || typeof filename !== "string") return null;
+      const trimmed = filename.trim();
+      if (!trimmed) return null;
+      if (trimmed.includes("..")) return null;
+      if (trimmed.startsWith("/") || trimmed.startsWith("\\")) return null;
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return null;
+      if (trimmed.includes("\\")) return null;
+      return trimmed;
+    }
+
+    function formatTokens(n) {
+      const num = Number(n);
+      if (!Number.isFinite(num)) return "0";
+      return Math.max(0, Math.trunc(num)).toLocaleString("en-US");
+    }
+
+    function coerceTokens(n) {
+      const num = Number(n);
+      return Number.isFinite(num) ? Math.max(0, Math.trunc(num)) : 0;
+    }
+
+    function isSuccess(entry) {
+      return entry.status === "success";
+    }
+
+    function isEmptyArtifact(value) {
+      if (value === undefined || value === null) return true;
+      if (typeof value === "string") return value.length === 0;
+      if (Array.isArray(value)) return value.length === 0;
+      if (typeof value === "object") return Object.keys(value).length === 0;
+      return false;
+    }
+
+    function formatArtifactText(value) {
+      if (value === undefined || value === null) return "";
+      if (typeof value === "string") return value;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+
+    function escapeHtml(str) {
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function parseJsonl(text) {
+      const lines = text.split(/\r?\n/);
+      const entries = [];
+      let skipped = 0;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+            entries.push(obj);
+          } else {
+            skipped += 1;
+          }
+        } catch {
+          skipped += 1;
+        }
+      }
+
+      return { entries, skipped };
+    }
+
+    function computeSummary(entries) {
+      let totalInput = 0;
+      let totalOutput = 0;
+      let failed = 0;
+      let llmIterations = 0;
+
+      for (const entry of entries) {
+        totalInput += coerceTokens(entry.input_tokens);
+        totalOutput += coerceTokens(entry.output_tokens);
+        if (!isSuccess(entry)) failed += 1;
+        const step = typeof entry.step === "string" ? entry.step : "";
+        if (step.toLowerCase().startsWith("llm_iteration")) llmIterations += 1;
+      }
+
+      return {
+        totalSteps: entries.length,
+        failedSteps: failed,
+        totalInputTokens: totalInput,
+        totalOutputTokens: totalOutput,
+        llmIterations,
+        toolCalls: countToolCalls(entries),
+      };
+    }
+
+    function renderState(title, message, isError) {
+      const app = document.getElementById("app");
+      app.innerHTML =
+        '<div class="state-panel' + (isError ? " error" : "") + '">' +
+        "<h2>" + escapeHtml(title) + "</h2>" +
+        "<p>" + message + "</p>" +
+        "</div>";
+    }
+
+    function renderArtifactBlock(label, value, id, hasContent) {
+      if (!hasContent) {
+        return (
+          '<div class="artifact-block is-empty">' +
+          '<div class="artifact-empty-label">No ' +
+          escapeHtml(label.toLowerCase()) +
+          " artifact</div>" +
+          "</div>"
+        );
+      }
+
+      const text = formatArtifactText(value);
+      return (
+        '<details class="artifact-block" id="' + escapeHtml(id) + '">' +
+        "<summary>" + escapeHtml(label) + " artifact</summary>" +
+        '<pre class="artifact-content" tabindex="0">' +
+        escapeHtml(text) +
+        "</pre>" +
+        "</details>"
+      );
+    }
+
+    function renderStepCard(entry, index) {
+      const stepNum = index + 1;
+      const stepName =
+        typeof entry.step === "string" && entry.step.trim()
+          ? entry.step
+          : "(unnamed step)";
+      const action =
+        typeof entry.action === "string" ? entry.action : "";
+      const inputTokens = coerceTokens(entry.input_tokens);
+      const outputTokens = coerceTokens(entry.output_tokens);
+      const success = isSuccess(entry);
+      const cardId = "step-" + stepNum;
+      const bodyId = cardId + "-body";
+
+      const inputArtifact = getArtifactValue(entry.artifacts, "input");
+      const outputArtifact = getArtifactValue(entry.artifacts, "output");
+      const hasInput = !isEmptyArtifact(inputArtifact);
+      const hasOutput = !isEmptyArtifact(outputArtifact);
+
+      let metaHtml = "";
+      if (entry.notes) {
+        metaHtml +=
+          '<div class="meta-item"><dt>Notes</dt><dd>' +
+          escapeHtml(String(entry.notes)) +
+          "</dd></div>";
+      }
+      if (entry.tool) {
+        metaHtml +=
+          '<div class="meta-item"><dt>Tool</dt><dd class="mono">' +
+          escapeHtml(String(entry.tool)) +
+          "</dd></div>";
+      }
+      if (entry.filepath) {
+        metaHtml +=
+          '<div class="meta-item"><dt>Filepath</dt><dd class="mono">' +
+          escapeHtml(String(entry.filepath)) +
+          "</dd></div>";
+      }
+      if (entry.source) {
+        metaHtml +=
+          '<div class="meta-item"><dt>Source</dt><dd><span class="source-badge">' +
+          escapeHtml(String(entry.source)) +
+          "</span></dd></div>";
+      }
+      if (entry.total_tokens !== undefined && entry.total_tokens !== null) {
+        metaHtml +=
+          '<div class="meta-item"><dt>Total tokens</dt><dd class="mono">' +
+          escapeHtml(formatTokens(entry.total_tokens)) +
+          "</dd></div>";
+      }
+
+      const statusClass = success ? "success" : "fail";
+      const statusIcon = success ? "✓" : "✗";
+      const statusLabel = success ? "Success" : "Failed";
+
+      return (
+        '<details class="step-card' +
+        (success ? "" : " is-failed") +
+        '" id="' +
+        escapeHtml(cardId) +
+        '">' +
+        '<summary aria-controls="' +
+        escapeHtml(bodyId) +
+        '">' +
+        '<span class="step-num">#' +
+        stepNum +
+        "</span>" +
+        '<span class="step-name">' +
+        escapeHtml(stepName) +
+        "</span>" +
+        '<span class="step-action">' +
+        escapeHtml(action) +
+        "</span>" +
+        '<span class="step-meta">' +
+        '<span class="token-pill" title="Input tokens">in ' +
+        formatTokens(inputTokens) +
+        "</span>" +
+        '<span class="token-pill" title="Output tokens">out ' +
+        formatTokens(outputTokens) +
+        "</span>" +
+        '<span class="status-badge ' +
+        statusClass +
+        '" aria-label="Status: ' +
+        statusLabel +
+        '">' +
+        '<span aria-hidden="true">' +
+        statusIcon +
+        "</span> " +
+        statusLabel +
+        "</span>" +
+        "</span>" +
+        "</summary>" +
+        '<div class="step-body" id="' +
+        escapeHtml(bodyId) +
+        '">' +
+        (metaHtml
+          ? '<dl class="meta-grid">' + metaHtml + "</dl>"
+          : "") +
+        '<div class="artifact-sections">' +
+        renderArtifactBlock(
+          "Input",
+          inputArtifact,
+          cardId + "-input",
+          hasInput,
+        ) +
+        renderArtifactBlock(
+          "Output",
+          outputArtifact,
+          cardId + "-output",
+          hasOutput,
+        ) +
+        "</div>" +
+        "</div>" +
+        "</details>"
+      );
+    }
+
+    function renderSummary(summary) {
+      return (
+        '<section class="summary-panel" aria-labelledby="summary-heading">' +
+        '<h2 id="summary-heading">Summary</h2>' +
+        '<div class="summary-grid">' +
+        statBlock("Tool Calls Number", summary.toolCalls) +
+        statBlock("Number of LLM Iterations", summary.llmIterations) +
+        statBlock("Total Input tokens", summary.totalInputTokens) +
+        statBlock("Total Output Tokens", summary.totalOutputTokens) +
+        statBlock("Total Steps", summary.totalSteps) +
+        statBlock(
+          "Failed Steps",
+          summary.failedSteps,
+          summary.failedSteps > 0,
+        ) +
+        "</div>" +
+        "</section>"
+      );
+    }
+
+    function statBlock(label, value, highlight) {
+      return (
+        '<div class="summary-stat">' +
+        '<span class="label">' +
+        escapeHtml(label) +
+        "</span>" +
+        '<span class="value' +
+        (highlight ? " fail" : "") +
+        '">' +
+        escapeHtml(formatTokens(value)) +
+        "</span>" +
+        "</div>"
+      );
+    }
+
+    function syncAriaExpanded() {
+      document.querySelectorAll("details.step-card, details.artifact-block").forEach((el) => {
+        const summary = el.querySelector("summary");
+        if (!summary || el.classList.contains("is-empty")) return;
+        summary.setAttribute("aria-expanded", el.open ? "true" : "false");
+        el.addEventListener("toggle", () => {
+          summary.setAttribute("aria-expanded", el.open ? "true" : "false");
+        });
+        summary.setAttribute("aria-expanded", el.open ? "true" : "false");
+      });
+    }
+
+    async function loadLog() {
+      const params = new URLSearchParams(location.search);
+      const rawParam = params.get("log");
+      const app = document.getElementById("app");
+      const pageTitle = document.getElementById("page-title");
+      const pageSubtitle = document.getElementById("page-subtitle");
+
+      if (!rawParam) {
+        renderState(
+          "No log specified",
+          'Add a <code>?log=&lt;filename&gt;</code> query parameter to load a JSONL log file.<br>Example: <code>reader.html?log=agent-abc123.jsonl</code>',
+          false,
+        );
+        return;
+      }
+
+      const filename = sanitizeLogParam(rawParam);
+      if (!filename) {
+        renderState(
+          "Unsafe log parameter",
+          "The requested filename was rejected (path traversal or invalid characters). Please provide a simple filename such as <code>agent-run.jsonl</code>.",
+          true,
+        );
+        return;
+      }
+
+      const url = LOG_BASE + filename;
+      document.title = "Agent Log — " + filename;
+      pageTitle.textContent = "Agent Run Log";
+      pageSubtitle.textContent = filename;
+
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          renderState(
+            "Failed to load log",
+            'Could not fetch <code>' +
+              escapeHtml(filename) +
+              "</code> (HTTP " +
+              response.status +
+              " " +
+              escapeHtml(response.statusText) +
+              ").<br>Attempted URL: <code>" +
+              escapeHtml(url) +
+              "</code>",
+            true,
+          );
+          return;
+        }
+
+        const text = await response.text();
+        const { entries, skipped } = parseJsonl(text);
+        const summary = computeSummary(entries);
+
+        if (entries.length === 0) {
+          app.innerHTML =
+            '<div class="state-panel"><h2>No steps in this log</h2><p>The file loaded but contained no valid JSON entries.</p></div>' +
+            renderSummary(summary);
+          return;
+        }
+
+        let html = "";
+        if (skipped > 0) {
+          html +=
+            '<div class="state-panel warn" role="status">' +
+            escapeHtml(
+              skipped +
+                " line(s) could not be parsed and were skipped.",
+            ) +
+            "</div>";
+        }
+
+        html += '<div class="steps" role="list">';
+        entries.forEach((entry, i) => {
+          html += renderStepCard(entry, i);
+        });
+        html += "</div>";
+        html += renderSummary(summary);
+
+        app.innerHTML = html;
+        syncAriaExpanded();
+      } catch (err) {
+        renderState(
+          "Failed to load log",
+          'An error occurred while fetching <code>' +
+            escapeHtml(filename) +
+            "</code>: " +
+            escapeHtml(err && err.message ? err.message : String(err)),
+          true,
+        );
+      }
+    }
+
+    loadLog();
+  </script>
+</body>
+</html>

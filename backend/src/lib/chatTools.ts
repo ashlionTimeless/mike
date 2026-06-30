@@ -43,6 +43,8 @@ import {
   type OpenAIToolSchema,
 } from "./llm";
 import { safeErrorMessage } from "./safeError";
+import { AgentStepLogger, buildToolExecutionLogs, isAgentStepLoggingEnabled } from "./agentStepLogger";
+import { buildAgentRunLogDownloadUrl } from "./logger";
 
 const STANDARD_FONT_DATA_URL = (() => {
   try {
@@ -3885,6 +3887,12 @@ type AssistantEvent =
   | CourtlistenerToolEvent
   | McpToolEvent
   | { type: "case_opinions"; cluster_id: number; case: unknown }
+  | {
+      type: "agent_run_log";
+      run_id: string;
+      filename: string;
+      download_url: string;
+    }
   | { type: "content"; text: string }
   | { type: "error"; message: string };
 
@@ -4003,6 +4011,27 @@ export async function runLLMStream(params: {
   let streamingCitationsBuffer = "";
   let streamedCitationCount = 0;
 
+  const selectedModel = resolveModel(model, DEFAULT_MAIN_MODEL);
+  const agentStepLogger = new AgentStepLogger({
+    userId,
+    model: selectedModel,
+  });
+  let llmIteration: number | null = null;
+
+  agentStepLogger.logTurnStart({
+    systemPrompt,
+    messages: chatMessages,
+  });
+
+  const emit: typeof write = (chunk) => {
+    if (typeof chunk === "string") {
+      for (const line of chunk.split("\n")) {
+        agentStepLogger.recordAgentStreamLine(line);
+      }
+    }
+    write(chunk);
+  };
+
   const emitCitationStreamSnapshot = (
     status: "started" | "partial",
     citations: unknown[],
@@ -4086,7 +4115,9 @@ export async function runLLMStream(params: {
     fullText += iterText;
     flushVisibleTail(opts);
     if (iterVisibleText) {
-      events.push({ type: "content", text: iterVisibleText });
+      const contentText = iterVisibleText;
+      events.push({ type: "content", text: contentText });
+      agentStepLogger.logContent(contentText, llmIteration);
     }
     iterText = "";
     iterVisibleText = "";
@@ -4099,12 +4130,12 @@ export async function runLLMStream(params: {
   const flushPartialTurn = (opts: { emit?: boolean } = {}) => {
     flushText(opts);
     if (iterReasoning) {
-      events.push({ type: "reasoning", text: iterReasoning });
+      const reasoningText = iterReasoning;
+      events.push({ type: "reasoning", text: reasoningText });
+      agentStepLogger.logThinking(reasoningText, llmIteration);
       iterReasoning = "";
     }
   };
-
-  const selectedModel = resolveModel(model, DEFAULT_MAIN_MODEL);
 
   try {
     throwIfAborted(signal);
@@ -4117,6 +4148,10 @@ export async function runLLMStream(params: {
       apiKeys,
       enableThinking: true,
       abortSignal: signal,
+      onLlmIterationEnd: (info) => {
+        llmIteration = info.iteration;
+        agentStepLogger.logLlmIteration(info);
+      },
       callbacks: {
         onContentDelta: (delta) => {
           iterText += delta;
@@ -4130,7 +4165,9 @@ export async function runLLMStream(params: {
         },
         onReasoningBlockEnd: () => {
           if (!iterReasoning) return;
-          events.push({ type: "reasoning", text: iterReasoning });
+          const reasoningText = iterReasoning;
+          events.push({ type: "reasoning", text: reasoningText });
+          agentStepLogger.logThinking(reasoningText, llmIteration);
           write(`data: ${JSON.stringify({ type: "reasoning_block_end" })}\n\n`);
           iterReasoning = "";
         },
@@ -4179,16 +4216,38 @@ export async function runLLMStream(params: {
           docStore,
           userId,
           db,
-          write,
+          emit,
           workflowStore,
           tabularStore,
           docIndex,
           turnEditState,
           projectId,
-        courtlistenerTurnState,
-        apiKeys,
-      );
+          courtlistenerTurnState,
+          apiKeys,
+        );
         throwIfAborted(signal);
+        for (const entry of buildToolExecutionLogs({
+          calls,
+          toolResults: toolResults as {
+            tool_call_id: string;
+            content?: unknown;
+          }[],
+          docStoragePath: (docLabel) => {
+            const resolved =
+              resolveDocLabel(docLabel, docStore, docIndex) ?? docLabel;
+            return docStore.get(resolved)?.storage_path;
+          },
+        })) {
+          agentStepLogger.logToolExecution({
+            tool: entry.tool,
+            action: entry.action,
+            filepath: entry.filepath,
+            status: entry.status,
+            notes: entry.notes,
+            inputText: entry.inputText,
+            outputText: entry.outputText,
+          });
+        }
         for (const r of docsRead) {
           events.push({
             type: "doc_read",
@@ -4274,11 +4333,14 @@ export async function runLLMStream(params: {
   } catch (err) {
     if (isAbortError(err)) {
       flushPartialTurn({ emit: false });
+      await agentStepLogger.flush();
       throw new AssistantStreamAbortError(fullText, events);
     }
     flushPartialTurn();
     const message = safeErrorMessage(err, "Stream error");
     events.push({ type: "error", message });
+    agentStepLogger.logError(message, { events, fullText });
+    await agentStepLogger.flush();
     throw new AssistantStreamError(message, fullText, events);
   }
 
@@ -4307,7 +4369,26 @@ export async function runLLMStream(params: {
   write(
     `data: ${JSON.stringify({ type: "citations", status: "final", citations })}\n\n`,
   );
+
+  if (isAgentStepLoggingEnabled()) {
+    const agentRunLogEvent = {
+      type: "agent_run_log" as const,
+      run_id: agentStepLogger.getRunId(),
+      filename: agentStepLogger.getLogFilename(),
+      download_url: buildAgentRunLogDownloadUrl(
+        agentStepLogger.getRunId(),
+        agentStepLogger.getLogFilename(),
+      ),
+    };
+    events.push(agentRunLogEvent);
+    write(`data: ${JSON.stringify(agentRunLogEvent)}\n\n`);
+  }
+
   write("data: [DONE]\n\n");
+
+  agentStepLogger.logCitations(citations);
+  agentStepLogger.logTurnComplete({ fullText, events, annotations: citations });
+  await agentStepLogger.flush();
 
   return { fullText, events, annotations: citations };
 }

@@ -112,6 +112,7 @@ export async function streamClaude(
     runTools,
     apiKeys,
     enableThinking,
+    onLlmIterationEnd,
   } = params;
   const maxIter = params.maxIterations ?? 10;
   const anthropic = client(apiKeys?.claude);
@@ -216,10 +217,14 @@ export async function streamClaude(
       // Extract text content and tool_use calls from the final assistant
       // message so we can accumulate text and drive the tool-call loop.
       const toolCalls: NormalizedToolCall[] = [];
+      let iterText = "";
       for (const block of assistantBlocks) {
         if (block.type === "text") {
           const txt = (block as { text: string }).text;
-          if (typeof txt === "string") fullText += txt;
+          if (typeof txt === "string") {
+            fullText += txt;
+            iterText += txt;
+          }
         } else if (block.type === "tool_use") {
           const tu = block as {
             id: string;
@@ -235,6 +240,20 @@ export async function streamClaude(
           toolCalls.push(call);
         }
       }
+
+      onLlmIterationEnd?.({
+        iteration: iter,
+        inputTokens: final.usage?.input_tokens ?? null,
+        outputTokens: final.usage?.output_tokens ?? null,
+        inputs: {
+          systemPrompt,
+          messages,
+        },
+        artifacts: {
+          text: iterText,
+          toolCalls: [...toolCalls],
+        },
+      });
 
       if (stopReason !== "tool_use" || !toolCalls.length || !runTools) {
         break;
