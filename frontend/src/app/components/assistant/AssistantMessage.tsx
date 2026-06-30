@@ -11,6 +11,7 @@ import {
     Check,
     ChevronDown,
     Download,
+    ExternalLink,
     File,
     FileText,
     Loader2,
@@ -829,6 +830,105 @@ function DocDownloadBlock({
                 {body}
             </button>
             {downloadIcon}
+        </div>
+    );
+}
+
+function buildAgentRunLogViewUrl(runId: string, filename: string): string {
+    const readerBase =
+        process.env.NEXT_PUBLIC_LOG_READER_URL ?? "http://localhost:8080";
+    const base = readerBase.replace(/\/$/, "");
+    const logPath = `${runId}/${filename}`;
+    return `${base}/reader.html?log=${encodeURIComponent(logPath)}`;
+}
+
+function AgentRunLogBlock({
+    runId,
+    filename,
+    download_url,
+}: {
+    runId: string;
+    filename: string;
+    download_url: string;
+}) {
+    const API_BASE =
+        process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+    const isSafeHref = download_url.startsWith("/");
+    const downloadHref = isSafeHref ? `${API_BASE}${download_url}` : null;
+    const viewUrl = buildAgentRunLogViewUrl(runId, filename);
+    const [busy, setBusy] = useState(false);
+
+    const handleDownload = async (e?: {
+        stopPropagation?: () => void;
+        preventDefault?: () => void;
+    }) => {
+        e?.stopPropagation?.();
+        e?.preventDefault?.();
+        if (busy || !downloadHref) return;
+        setBusy(true);
+        try {
+            const {
+                data: { session },
+            } = await supabase.auth.getSession();
+            const token = session?.access_token;
+            const resp = await fetch(downloadHref, {
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const extMatch = filename.match(/\.(\w+)$/);
+    const ext = extMatch ? extMatch[1].toUpperCase() : "LOG";
+    const basename = extMatch
+        ? filename.slice(0, -extMatch[0].length)
+        : filename;
+
+    return (
+        <div
+            className={`flex items-stretch overflow-hidden w-full font-sans ${RESPONSE_GLASS_SURFACE}`}
+        >
+            <div className="flex items-center gap-3 px-4 py-3 min-w-0 flex-1">
+                <div className="min-w-0 flex-1">
+                    <p className="text-base font-serif text-gray-900 text-wrap">
+                        {basename}
+                    </p>
+                    <p className="text-xs text-blue-500 mt-0.5">{ext}</p>
+                </div>
+            </div>
+            <a
+                href={viewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 flex items-center gap-1.5 border-l border-white/40 bg-white/25 px-4 text-gray-500 transition-colors hover:bg-white/55 hover:text-gray-700"
+            >
+                <ExternalLink size={13} />
+                <span className="text-xs font-medium">View</span>
+            </a>
+            <button
+                type="button"
+                onClick={handleDownload}
+                disabled={busy || !downloadHref}
+                className="shrink-0 flex items-center gap-1.5 border-l border-white/40 bg-white/25 px-4 text-gray-500 transition-colors hover:bg-white/55 hover:text-gray-700 disabled:cursor-not-allowed disabled:text-gray-400"
+            >
+                {busy ? (
+                    <Loader2 size={13} className="animate-spin" />
+                ) : (
+                    <Download size={13} />
+                )}
+                <span className="text-xs font-medium">Download</span>
+            </button>
         </div>
     );
 }
@@ -2565,8 +2665,9 @@ export function AssistantMessage({
                                     { type: "agent_run_log" }
                                 >[]
                             ).map((e, i) => (
-                                <DocDownloadBlock
+                                <AgentRunLogBlock
                                     key={`agent-run-log-${i}`}
+                                    runId={e.run_id}
                                     filename={e.filename}
                                     download_url={e.download_url}
                                 />

@@ -43,7 +43,7 @@ import {
   type OpenAIToolSchema,
 } from "./llm";
 import { safeErrorMessage } from "./safeError";
-import { AgentStepLogger, buildToolExecutionLogs, isAgentStepLoggingEnabled, toolExecutionIncludesUserOutput } from "./agentStepLogger";
+import { AgentStepLogger, buildToolExecutionLogs, isAgentStepLoggingEnabled } from "./agentStepLogger";
 import { buildAgentRunLogDownloadUrl } from "./logger";
 
 const STANDARD_FONT_DATA_URL = (() => {
@@ -4246,7 +4246,6 @@ export async function runLLMStream(params: {
             notes: entry.notes,
             inputText: entry.inputText,
             outputText: entry.outputText,
-            includeUserOutput: toolExecutionIncludesUserOutput(entry.tool),
           });
         }
         for (const r of docsRead) {

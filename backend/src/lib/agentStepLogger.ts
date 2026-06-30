@@ -8,7 +8,9 @@ export type AgentLogStatus = "success" | "error";
 export type AgentLogSource = "api" | "estimated";
 
 export type AgentLogArtifacts = {
-  /** User-visible assistant or tool UI text for this step. */
+  /** Text that input_tokens was computed from. */
+  input?: string;
+  /** Text that output_tokens was computed from (or user-visible output). */
   output?: string;
 };
 
@@ -35,10 +37,39 @@ function truncateArtifactOutput(text: string, max = MAX_ARTIFACT_OUTPUT): string
   return `${trimmed.slice(0, max)}…`;
 }
 
-function withOutput(output: string | undefined | null): Pick<AgentLogRecord, "artifacts"> {
-  const trimmed = output?.trim();
-  if (!trimmed) return {};
-  return { artifacts: { output: truncateArtifactOutput(trimmed) } };
+function withArtifacts(
+  input?: string | null,
+  output?: string | null,
+): Pick<AgentLogRecord, "artifacts"> {
+  const artifacts: AgentLogArtifacts = {};
+  const inputText = input?.trim();
+  const outputText = output?.trim();
+  if (inputText) artifacts.input = truncateArtifactOutput(inputText);
+  if (outputText) artifacts.output = truncateArtifactOutput(outputText);
+  if (!artifacts.input && !artifacts.output) return {};
+  return { artifacts };
+}
+
+function serializeLlmInputs(inputs: {
+  systemPrompt: string;
+  messages: unknown;
+}): string {
+  return JSON.stringify({
+    systemPrompt: inputs.systemPrompt,
+    messages: inputs.messages,
+  });
+}
+
+function serializeLlmOutput(artifacts: {
+  text: string;
+  toolCalls: NormalizedToolCall[];
+}): string {
+  const parts: string[] = [];
+  if (artifacts.text.trim()) parts.push(artifacts.text);
+  if (artifacts.toolCalls.length) {
+    parts.push(JSON.stringify(artifacts.toolCalls));
+  }
+  return parts.join("\n\n");
 }
 
 export function isAgentStepLoggingEnabled(): boolean {
@@ -121,10 +152,17 @@ export class AgentStepLogger {
     if (!isAgentStepLoggingEnabled()) return;
     const entry: AgentLogRecord = { ...record };
     if (entry.notes) entry.notes = truncateNotes(entry.notes);
-    if (entry.artifacts?.output) {
-      entry.artifacts.output = truncateArtifactOutput(entry.artifacts.output);
+    if (entry.artifacts) {
+      if (entry.artifacts.input) {
+        entry.artifacts.input = truncateArtifactOutput(entry.artifacts.input);
+      }
+      if (entry.artifacts.output) {
+        entry.artifacts.output = truncateArtifactOutput(entry.artifacts.output);
+      }
+      if (!entry.artifacts.input && !entry.artifacts.output) {
+        delete entry.artifacts;
+      }
     }
-    if (!entry.artifacts?.output) delete entry.artifacts;
     if (!entry.tool) delete entry.tool;
     if (!entry.filepath) delete entry.filepath;
     if (!entry.notes) delete entry.notes;
@@ -137,12 +175,14 @@ export class AgentStepLogger {
     const messageCount = Array.isArray(inputs.messages)
       ? inputs.messages.length
       : 0;
-    const inputTokens = estimateTokens(inputs);
+    const inputText = serializeLlmInputs(inputs);
+    const inputTokens = estimateTokens(inputText);
     this.write({
       step: "turn_start",
       action: "Loaded conversation context and system prompt",
       status: "success",
       notes: `${messageCount} chat message(s); system prompt ${inputs.systemPrompt.length} chars.`,
+      ...withArtifacts(inputText),
       ...tokenFields({
         inputTokens,
         outputTokens: 0,
@@ -155,6 +195,8 @@ export class AgentStepLogger {
     const toolNames = info.artifacts.toolCalls.map((call) => call.name);
     const hasApiUsage =
       info.inputTokens != null && info.outputTokens != null;
+    const inputText = serializeLlmInputs(info.inputs);
+    const outputText = serializeLlmOutput(info.artifacts);
     const notes = [
       summarizeText(info.artifacts.text, "Model text"),
       toolNames.length
@@ -170,15 +212,14 @@ export class AgentStepLogger {
       action: `Completed model iteration ${info.iteration}`,
       status: "success",
       notes,
-      ...withOutput(info.artifacts.text),
+      ...withArtifacts(inputText, outputText),
       ...tokenFields({
         inputTokens: hasApiUsage
           ? info.inputTokens
-          : estimateTokens(info.inputs),
+          : estimateTokens(inputText),
         outputTokens: hasApiUsage
           ? info.outputTokens
-          : estimateTokens(info.artifacts.text) +
-            estimateTokens(info.artifacts.toolCalls),
+          : estimateTokens(outputText),
         source: hasApiUsage ? "api" : "estimated",
       }),
     });
@@ -190,7 +231,7 @@ export class AgentStepLogger {
       action: "Recorded model reasoning block",
       status: "success",
       notes: summarizeText(text, "Reasoning"),
-      ...withOutput(text),
+      ...withArtifacts(undefined, text),
       ...tokenFields({
         inputTokens: 0,
         outputTokens: estimateTokens(text),
@@ -205,7 +246,7 @@ export class AgentStepLogger {
       action: "Recorded assistant response text segment",
       status: "success",
       notes: summarizeText(text, "Response"),
-      ...withOutput(text),
+      ...withArtifacts(undefined, text),
       ...tokenFields({
         inputTokens: 0,
         outputTokens: estimateTokens(text),
@@ -222,15 +263,7 @@ export class AgentStepLogger {
     notes?: string;
     inputText?: string;
     outputText?: string;
-    /** When false, skip artifacts.output (already logged via stream UI event). */
-    includeUserOutput?: boolean;
-    userOutput?: string;
   }): void {
-    const includeUserOutput = args.includeUserOutput ?? true;
-    const artifactOutput =
-      includeUserOutput && (args.userOutput ?? args.outputText)
-        ? args.userOutput ?? args.outputText
-        : undefined;
     this.write({
       step: args.tool,
       action: args.action,
@@ -238,7 +271,7 @@ export class AgentStepLogger {
       filepath: args.filepath,
       status: args.status ?? "success",
       notes: args.notes,
-      ...withOutput(artifactOutput),
+      ...withArtifacts(args.inputText, args.outputText),
       ...tokenFields({
         inputTokens: estimateTokens(args.inputText ?? ""),
         outputTokens: estimateTokens(args.outputText ?? ""),
@@ -261,7 +294,7 @@ export class AgentStepLogger {
       filepath: args.filepath,
       status: "success",
       notes: summarizeText(args.output, "Output"),
-      ...withOutput(args.output),
+      ...withArtifacts(undefined, args.output),
       ...tokenFields({
         inputTokens: 0,
         outputTokens: estimateTokens(args.output),
@@ -279,14 +312,16 @@ export class AgentStepLogger {
   }
 
   logCitations(citations: unknown[]): void {
+    const outputText = JSON.stringify(citations);
     this.write({
       step: "citations",
       action: "Parsed and emitted citation annotations",
       status: "success",
       notes: `${citations.length} citation(s) emitted.`,
+      ...withArtifacts(undefined, outputText),
       ...tokenFields({
         inputTokens: 0,
-        outputTokens: estimateTokens(citations),
+        outputTokens: estimateTokens(outputText),
         source: "estimated",
       }),
     });
@@ -297,6 +332,7 @@ export class AgentStepLogger {
     events: unknown[];
     annotations: unknown[];
   }): void {
+    const inputText = JSON.stringify(args.events);
     this.write({
       step: "turn_complete",
       action: "Completed assistant turn",
@@ -305,9 +341,9 @@ export class AgentStepLogger {
         summarizeText(args.fullText, "Final response"),
         `${args.events.length} event(s), ${args.annotations.length} annotation(s).`,
       ].join(" "),
-      ...withOutput(args.fullText),
+      ...withArtifacts(inputText, args.fullText),
       ...tokenFields({
-        inputTokens: estimateTokens(args.events),
+        inputTokens: estimateTokens(inputText),
         outputTokens: estimateTokens(args.fullText),
         source: "estimated",
       }),
@@ -315,15 +351,18 @@ export class AgentStepLogger {
   }
 
   logError(message: string, context?: unknown): void {
+    const inputText =
+      context == null ? "" : JSON.stringify(context);
     this.write({
       step: "error",
       action: "Agent turn failed",
       status: "error",
       notes: context
-        ? `${message} Context: ${truncateNotes(JSON.stringify(context), 2000)}`
+        ? `${message} Context: ${truncateNotes(inputText, 2000)}`
         : message,
+      ...withArtifacts(inputText || undefined, message),
       ...tokenFields({
-        inputTokens: estimateTokens(context),
+        inputTokens: estimateTokens(inputText),
         outputTokens: estimateTokens(message),
         source: "estimated",
       }),
@@ -456,19 +495,6 @@ function buildToolNotes(
   }
 
   return parts.join(" ");
-}
-
-const TOOLS_WITH_STREAM_UI = new Set([
-  "read_document",
-  "find_in_document",
-  "generate_docx",
-  "edit_document",
-  "replicate_document",
-  "apply_workflow",
-]);
-
-export function toolExecutionIncludesUserOutput(tool: string): boolean {
-  return !TOOLS_WITH_STREAM_UI.has(tool);
 }
 
 export function parseSseDataPayload(line: string): Record<string, unknown> | null {

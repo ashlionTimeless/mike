@@ -22,3 +22,13 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+  log-reader:
+    build:
+      context: .
+      dockerfile: log-reader/Dockerfile
+    ports:
+      - "8080:80"
+    volumes:
+      - ./volumes/agent-logs:/srv/agent-logs:ro
+    restart: unless-stopped
