@@ -6,21 +6,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 FROM base AS build
 COPY package.json package-lock.json ./
-# Keep node_modules in a BuildKit cache mount so this layer does not commit
-# a huge snapshot (avoids intermittent BuildKit "snapshot does not exist" errors).
-RUN --mount=type=cache,target=/root/.npm \
-    --mount=type=cache,target=/app/node_modules,sharing=locked,id=mike-frontend-nm \
-    npm ci
 
 COPY . .
-
-# NEXT_PUBLIC_* variables are read during `next build`. Use .env when present,
-# otherwise fall back to committed env.docker (used by scaffoldbench compose).
-RUN --mount=type=cache,target=/root/.npm \
-    --mount=type=cache,target=/app/node_modules,sharing=locked,id=mike-frontend-nm \
-    if [ -f .env ]; then cp .env .env.build; elif [ -f env.docker ]; then cp env.docker .env.build; else echo "frontend/.env or env.docker is required." >&2 && exit 1; fi \
-    && mv .env.build .env \
-    && npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
@@ -32,10 +19,6 @@ RUN addgroup --system --gid 1001 nodejs \
 
 WORKDIR /app
 
-# Standalone output bundles production deps; no second `npm ci` in the image.
-COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=build --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
 EXPOSE 3000
