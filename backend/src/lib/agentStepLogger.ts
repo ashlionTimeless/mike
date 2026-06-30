@@ -2,6 +2,10 @@ import { randomUUID } from "crypto";
 import path from "path";
 import type { LlmIterationLog, NormalizedToolCall } from "./llm/types";
 import { Logger, createAgentRunLogDir } from "./logger";
+import {
+  getRemoteWriterConfigOrNull,
+  RemoteAgentLogWriter,
+} from "./remoteAgentLogWriter";
 
 export type AgentLogStatus = "success" | "error";
 
@@ -115,18 +119,34 @@ function summarizeText(text: string, label: string): string {
 }
 
 /**
- * Structured agent-step logger. Each step is one JSONL record via Logger.
+ * Structured agent-step logger. Each step is one JSONL record, written locally
+ * or via the agent-log-writer service when AGENT_LOG_WRITER_URL is set.
  */
 export class AgentStepLogger {
-  private readonly logger: Logger;
+  private readonly logger: Logger | null;
+  private readonly remoteWriter: RemoteAgentLogWriter | null;
   private readonly sessionId: string;
   private readonly runLogDir: string;
-  private readonly runId: string;
+  private readonly runId: string | null;
   private readonly model: string | null;
 
   constructor(args: { userId?: string; model?: string }) {
     this.sessionId = randomUUID();
     this.model = args.model ?? null;
+    const remoteConfig = getRemoteWriterConfigOrNull();
+    if (remoteConfig) {
+      this.remoteWriter = new RemoteAgentLogWriter({
+        sessionId: this.sessionId,
+        sink: remoteConfig.sink,
+        baseUrl: remoteConfig.baseUrl,
+      });
+      this.logger = null;
+      this.runLogDir = "";
+      this.runId = null;
+      return;
+    }
+
+    this.remoteWriter = null;
     this.runLogDir = createAgentRunLogDir();
     this.runId = path.basename(this.runLogDir);
     this.logger = new Logger(`agent-${this.sessionId}.jsonl`, this.runLogDir);
@@ -141,7 +161,7 @@ export class AgentStepLogger {
   }
 
   getRunId(): string {
-    return this.runId;
+    return this.runId ?? this.remoteWriter?.getRunId() ?? "";
   }
 
   getLogFilename(): string {
@@ -166,7 +186,13 @@ export class AgentStepLogger {
     if (!entry.tool) delete entry.tool;
     if (!entry.filepath) delete entry.filepath;
     if (!entry.notes) delete entry.notes;
-    this.logger.log(entry as unknown as Record<string, unknown>, {
+
+    if (this.remoteWriter) {
+      this.remoteWriter.log(entry);
+      return;
+    }
+
+    this.logger!.log(entry as unknown as Record<string, unknown>, {
       omitTimestamp: true,
     });
   }
@@ -370,7 +396,11 @@ export class AgentStepLogger {
   }
 
   async flush(): Promise<void> {
-    await this.logger.flush();
+    if (this.remoteWriter) {
+      await this.remoteWriter.flush();
+      return;
+    }
+    await this.logger!.flush();
   }
 }
 
