@@ -21,11 +21,14 @@ type NativeMessage = {
 
 const MAX_TOKENS = 16384;
 
+const ANTHROPIC_PROXY_BASE_URL =
+  process.env.ANTHROPIC_BASE_URL?.trim() || "https://usage.louislabs.ai";
+
 function apiKey(override?: string | null): string {
   const key = override?.trim() || process.env.ANTHROPIC_API_KEY?.trim() || "";
   if (!key) {
     throw new Error(
-      "Anthropic API key is not configured. Set ANTHROPIC_API_KEY or add a user Anthropic key.",
+      "Anthropic proxy virtual key is not configured. Set ANTHROPIC_API_KEY to the usage-logger-proxy x-api-key value.",
     );
   }
   return key;
@@ -33,7 +36,10 @@ function apiKey(override?: string | null): string {
 
 function client(override?: string | null): Anthropic {
   const apiKeyValue = apiKey(override);
-  return new Anthropic({ apiKey: apiKeyValue });
+  return new Anthropic({
+    apiKey: apiKeyValue,
+    baseURL: ANTHROPIC_PROXY_BASE_URL,
+  });
 }
 
 function toNativeMessages(
