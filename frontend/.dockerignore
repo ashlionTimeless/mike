@@ -4,7 +4,6 @@ out
 .env.*
 !.env
 !.env.local.example
-.env
 *.log
 .git
 .gitignore

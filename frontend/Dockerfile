@@ -12,12 +12,10 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . .
 
-# NEXT_PUBLIC_* variables are read during `next build`. Use .env when present,
-# otherwise fall back to committed env.docker (used by scaffoldbench compose).
+# NEXT_PUBLIC_* variables are read from frontend/.env during `next build`.
 RUN --mount=type=cache,target=/root/.npm \
     --mount=type=cache,target=/app/node_modules,sharing=locked,id=mike-frontend-nm \
-    if [ -f .env ]; then cp .env .env.build; elif [ -f env.docker ]; then cp env.docker .env.build; else echo "frontend/.env or env.docker is required." >&2 && exit 1; fi \
-    && mv .env.build .env \
+    test -f .env || (echo "frontend/.env is required. Copy from .env.local.example." >&2 && exit 1) \
     && npm run build
 
 FROM base AS runner
